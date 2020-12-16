@@ -48,11 +48,14 @@ MODES = {
     'CUSTOM_EFFECT': 219,
     'AUTO': 0xFC
 }
+
+
 def get_mode(x):
-    for k,v in MODES.items():
+    for k, v in MODES.items():
         if v == x:
             return k
     return 'UNKNOWN'
+
 
 CHIP_TYPES = {
     "SM16703": 0x00,
@@ -83,11 +86,14 @@ CHIP_TYPES = {
     "P9414": 0x19,
     "P9412": 0x1a
 }
+
+
 def get_chip_type(x):
-    for k,v in CHIP_TYPES.items():
+    for k, v in CHIP_TYPES.items():
         if v == x:
             return k
     return 'UNKNOWN'
+
 
 COLOR_ORDERS = {
     "RGB": 0x00,
@@ -97,22 +103,70 @@ COLOR_ORDERS = {
     "BRG": 0x04,
     "BGR": 0x05
 }
+
+
 def get_color_order(x):
-    for k,v in COLOR_ORDERS.items():
+    for k, v in COLOR_ORDERS.items():
         if v == x:
             return k
     return 'UNKNOWN'
 
+
+class ExtraSocket(object):
+    def __init__(self, destination: str, port: int, debug=False):
+        self._debug = debug
+        self._s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._s.connect((destination, port))
+
+    def close(self):
+        self._s.close()
+
+    def wait_recv(self, timeout: float = 1.0):
+        self._s.setblocking(False)
+        ready = select.select([self._s], [], [], timeout)
+        if ready[0]:
+            inner_recv = self._s.recv(4096)
+            if self._debug:
+                print("Received:", inner_recv)
+            return inner_recv
+        if self._debug:
+            print(f"Timeout of {timeout} expired while receiving")
+        return ''
+
+    def wait_send(self, data_to_send, delay: float = 0.):
+        if self._debug:
+            print("Sending %d bytes..." % len(data_to_send))
+
+        self._s.setblocking(True)
+        self._s.sendall(data_to_send)
+
+        if delay > 0.0:
+            if self._debug:
+                print("Waiting...")
+            time.sleep(delay)
+
+
 class SP108ECommunication(object):
     def __init__(self, controller_ip: str, controller_port: int = 8189, debug: bool = False):
         self._debug = debug
+        self._ip = controller_ip
+        self._port = controller_port
+
+        # TODO: Investigate single use sockets
+        self._s = None
+
+    def _create_socket(self):
+        if self._s:
+            if self._debug:
+                print("Persistent socket already opened, closing")
+            self._s.close()
+            self._s = None
 
         # Open connection.
-        self.s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.s.connect((controller_ip, controller_port))
-        self.s.setblocking(False)
+        return ExtraSocket(self._ip, self._port, self._debug)
 
-    def _send(self, cmd, data=None, delay: float = 0.5):
+    @staticmethod
+    def _make_socket_data(cmd, data=None):
         if data is None:
             data = b'\x00\x00\x00'
         elif len(data) < 3:
@@ -120,29 +174,31 @@ class SP108ECommunication(object):
         elif len(data) > 3:
             raise ValueError("data length max is 3")
 
-        data_to_send = bytes([CMD_FRAME_START]) + data + bytes([cmd, CMD_FRAME_END])
-        self.s.send(data_to_send)
+        return bytes([CMD_FRAME_START]) + data + bytes([cmd, CMD_FRAME_END])
 
-        if delay > 0.0:
-            time.sleep(delay)
+    def _send(self, cmd, data=None, delay: float = 0.):
+        data_to_send = self._make_socket_data(cmd, data)
+        s = self._create_socket()
+        s.wait_send(data_to_send, delay)
 
-    def _recv(self, timeout: float = 1):
-        ready = select.select([self.s], [], [], timeout)
+    def _send_and_recv(self, cmd, data=None, delay=0.0, timeout=1.0):
+        data_to_send = self._make_socket_data(cmd, data)
+        s =  self._create_socket()
+        s.wait_send(data_to_send, delay)
+        return s.wait_recv(timeout)
 
-        if ready[0]:
-            recv = self.s.recv(4096)
-            if self._debug:
-                print("Received:", recv)
-            return recv
+    def _send_and_recv_persistent(self, cmd, data=None, extra_data=None, delay=0.0, timeout=1.0):
+        if not self._s:
+            self._s = self._create_socket()
 
-        if self._debug:
-            print(f"Timeout of {timeout} expired while receiving")
+        data_to_send = self._make_socket_data(cmd, data)
+        self._s.wait_send(data_to_send, delay)
+        recv = self._s.wait_recv(timeout)
+        if extra_data:
+            self._s.wait_send(extra_data, delay)
+            recv = self._s.wait_recv(timeout)
+        return recv
 
-        return ''
-
-    def _sendrecv(self, cmd, data=None, delay=0.0, timeout=1.0):
-        self._send(cmd, data, delay)
-        return self._recv(timeout)
 
 
 class SP180E(SP108ECommunication):
@@ -169,14 +225,14 @@ class SP180E(SP108ECommunication):
         self._send(CMD_SEC_COUNT, segment_count.to_bytes(2, 'little'))
 
     def get_name(self):
-        return self._sendrecv(CMD_GET_DEVICE_NAME)
+        return self._send_and_recv(CMD_GET_DEVICE_NAME)
 
     def is_device_ready(self):
-        data = self._sendrecv(CMD_CHECK_DEVICE_IS_COOL)
+        data = self._send_and_recv(CMD_CHECK_DEVICE_IS_COOL)
         return data == b'1'
 
     def sync(self):
-        data = self._sendrecv(CMD_SYNC)
+        data = self._send_and_recv(CMD_SYNC)
 
         is_valid = data[0] == 0x38
         leds_per_segment = data[7] + (data[6] << 8)
@@ -256,7 +312,4 @@ class SP180E(SP108ECommunication):
         # That way you can always push a 300px wide image and have
         # it look ok
 
-        self._sendrecv(CMD_CUSTOM_PREVIEW, bytes([0xE9, 0x39, 0x9A]))
-        self.s.send(values)
-        self._recv()
-
+        self._send_and_recv_persistent(CMD_CUSTOM_PREVIEW, bytes([0xE9, 0x39, 0x9A]), values)
