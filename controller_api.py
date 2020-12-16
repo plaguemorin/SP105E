@@ -242,6 +242,20 @@ class SP180E(SP108ECommunication):
         self._send(CMD_TOGGLE_LAMP)
 
     def send_pixel_values(self, values):
+        if len(values) != 900:
+            raise ValueError("There MUST be 900 values (300 RGB)")
+
+        # If there's 150 LEDs, there's still 900 values
+        # but instead of being R,G,B,R,G,B,R,G,B it's
+        # R,G,B,x,x,x,R,G,B
+
+        # My guess is the controller always reads 900 bytes
+        # and decides how many bytes to skip between each RGB
+        # depending on the number of "pixels"
+
+        # That way you can always push a 300px wide image and have
+        # it look ok
+
         self._sendrecv(CMD_CUSTOM_PREVIEW, bytes([0xE9, 0x39, 0x9A]))
         self.s.send(values)
         self._recv()
