@@ -121,9 +121,6 @@ class SP108ECommunication(object):
             raise ValueError("data length max is 3")
 
         data_to_send = bytes([CMD_FRAME_START]) + data + bytes([cmd, CMD_FRAME_END])
-        if self._debug:
-            print("Sending: ", data_to_send)
-
         self.s.send(data_to_send)
 
         if delay > 0.0:
@@ -143,9 +140,9 @@ class SP108ECommunication(object):
 
         return ''
 
-    def _sendrecv(self, cmd, data=None, delay=0.0):
+    def _sendrecv(self, cmd, data=None, delay=0.0, timeout=1.0):
         self._send(cmd, data, delay)
-        return self._recv()
+        return self._recv(timeout)
 
 
 class SP180E(SP108ECommunication):
@@ -235,3 +232,17 @@ class SP180E(SP108ECommunication):
         if not 0 <= speed <= 255:
             raise ValueError("speed must be between 0 and 255")
         self._send(CMD_SPEED, bytes([speed]))
+
+    def set_preloaded_animation(self, index):
+        if not 0 <= index <= 0xB4:
+            raise ValueError("Index should be between 0 and 0xB4")
+        self._send(CMD_MODE_CHANGE, bytes([index]))
+
+    def toggle_on_off(self):
+        self._send(CMD_TOGGLE_LAMP)
+
+    def send_pixel_values(self, values):
+        self._sendrecv(CMD_CUSTOM_PREVIEW, bytes([0xE9, 0x39, 0x9A]))
+        self.s.send(values)
+        self._recv()
+
